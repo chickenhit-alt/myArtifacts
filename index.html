@@ -217,6 +217,16 @@ body{font-family:'Nanum Square Round',sans-serif;background:var(--bg);color:var(
 .upload-mode-icon{font-size:24px;margin-bottom:6px;}
 .upload-mode-title{font-size:13px;font-weight:800;color:var(--text-dark);margin-bottom:4px;}
 .upload-mode-desc{font-size:10px;color:var(--text-mid);line-height:1.6;}
+
+/* ── ANALYSIS REPORT ── */
+.analysis-section{border-radius:10px;padding:16px;margin-bottom:12px;animation:fadeIn .4s ease both;}
+.analysis-section.anomaly{background:linear-gradient(135deg,#eaf6ff,#f0f9ff);border-left:4px solid #3498db;}
+.analysis-section.problem{background:linear-gradient(135deg,#fff3f0,#fff8f6);border-left:4px solid var(--accent2);}
+.analysis-section.improvement{background:linear-gradient(135deg,#eafaf1,#f0fff8);border-left:4px solid var(--accent);}
+.analysis-section-title{font-size:13px;font-weight:800;margin-bottom:10px;display:flex;align-items:center;gap:6px;color:var(--text-dark);}
+.analysis-item{font-size:12px;line-height:1.9;color:var(--text-dark);padding:4px 0;border-bottom:1px dashed var(--border);}
+.analysis-item:last-child{border-bottom:none;}
+.analysis-empty{font-size:12px;color:var(--text-mid);font-style:italic;}
 </style>
 </head>
 <body>
@@ -383,6 +393,37 @@ body{font-family:'Nanum Square Round',sans-serif;background:var(--bg);color:var(
             </thead>
             <tbody id="top10TableBody"></tbody>
           </table>
+        </div>
+      </div>
+
+      <!-- 품목별 비교 분석 리포트 -->
+      <div class="card" id="analysisReportCard" style="display:none;">
+        <div class="card-header" style="justify-content:space-between;">
+          <span>🔍 품목별 비교 분석 리포트</span>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <select id="analysisDateSel" onchange="loadAnalysisByDate(this.value)"
+              style="border:1px solid rgba(255,255,255,.3);border-radius:6px;padding:4px 8px;font-family:inherit;font-size:11px;background:rgba(255,255,255,.15);color:#fff;outline:none;cursor:pointer;">
+            </select>
+            <button onclick="generateAndSaveAnalysis()"
+              style="background:var(--accent);color:#fff;border:none;border-radius:6px;padding:5px 12px;font-family:inherit;font-size:11px;font-weight:800;cursor:pointer;">
+              🔄 재분석
+            </button>
+          </div>
+        </div>
+        <div class="card-body" style="padding:14px;">
+          <div id="analysisDateLabel" style="font-size:11px;font-weight:700;color:var(--text-mid);margin-bottom:14px;padding:6px 10px;background:#f8f9fa;border-radius:6px;"></div>
+          <div class="analysis-section anomaly">
+            <div class="analysis-section-title">🔎 1. 특이점</div>
+            <div id="sectionAnomaly"></div>
+          </div>
+          <div class="analysis-section problem">
+            <div class="analysis-section-title">⚠️ 2. 문제점</div>
+            <div id="sectionProblem"></div>
+          </div>
+          <div class="analysis-section improvement">
+            <div class="analysis-section-title">💡 3. 개선점</div>
+            <div id="sectionImprovement"></div>
+          </div>
         </div>
       </div>
 
@@ -1104,6 +1145,7 @@ function confirmUpload(){
   buildSidebar();
   render();
 
+  generateAndSaveAnalysis();
   // 완료 토스트
   showToast(`✅ ${uploadMode === 'replace' ? '전체 교체' : '누적 추가'} 완료! (${RAW.daily.length}일 데이터 로드됨)`);
 }
@@ -1301,6 +1343,143 @@ function renderStrategy(){
         + '</tr>';
     }).join('') || '<tr><td colspan="9" style="text-align:center;padding:24px;color:var(--text-light);">해당 기간 데이터가 없습니다</td></tr>';
   }
+
+  // 저장된 분석 리포트 표시
+  const allDatesForAnalysis = RAW.daily.map(d=>d.date).sort();
+  const latestForAnalysis = allDatesForAnalysis[allDatesForAnalysis.length-1];
+  if(latestForAnalysis){
+    const savedHistory = JSON.parse(localStorage.getItem('analysisHistory')||'{}');
+    const dates = Object.keys(savedHistory).sort().reverse();
+    if(dates.length>0){
+      renderAnalysisReport(savedHistory[dates[0]]);
+    } else {
+      const card = document.getElementById('analysisReportCard');
+      if(card){
+        card.style.display='';
+        document.getElementById('analysisDateLabel').textContent = '아직 저장된 분석이 없습니다. 데이터를 업로드하거나 재분석 버튼을 눌러주세요.';
+        document.getElementById('sectionAnomaly').innerHTML='';
+        document.getElementById('sectionProblem').innerHTML='';
+        document.getElementById('sectionImprovement').innerHTML='';
+      }
+    }
+  }
+}
+
+// ─── ANALYSIS REPORT ───
+function getTop10DataForRange(from, to){
+  const filteredDates = RAW.daily.map(d=>d.date).filter(d=>d>=from && d<=to);
+  const prodAgg = {};
+  filteredDates.forEach(date=>{
+    const dp = RAW.dp[date]||{};
+    Object.entries(dp).forEach(([id,val])=>{
+      if(!prodAgg[id]) prodAgg[id]={amt:0,qty:0,view:0,activeDays:0};
+      prodAgg[id].amt+=val.a; prodAgg[id].qty+=val.q; prodAgg[id].view+=val.v;
+      if(val.q>0||val.a>0) prodAgg[id].activeDays++;
+    });
+  });
+  const nameMap={};
+  RAW.products.forEach(p=>{nameMap[p.id]=p.name;});
+  const sorted = Object.entries(prodAgg)
+    .map(([id,v])=>({
+      id, name:nameMap[id]||id,
+      amt:Math.round(v.amt), qty:Math.round(v.qty),
+      view:Math.round(v.view), activeDays:v.activeDays,
+      totalDays:filteredDates.length,
+      convRate:v.view>0?(v.qty/v.view*100):0,
+      avgDailyAmt:v.activeDays>0?Math.round(v.amt/v.activeDays):0
+    }))
+    .filter(p=>p.amt>0)
+    .sort((a,b)=>b.amt-a.amt)
+    .slice(0,10);
+  return {top10:sorted, filteredDates, totalAmt:sorted.reduce((s,p)=>s+p.amt,0)};
+}
+
+function computeAnalysis(date, day1, month3){
+  const anomalies=[], problems=[], improvements=[];
+  const month3Map={};
+  month3.forEach((p,i)=>{month3Map[p.id]={...p,rank:i+1};});
+  const day1Map={};
+  day1.forEach((p,i)=>{day1Map[p.id]={...p,rank:i+1};});
+
+  day1.forEach((p,i)=>{
+    if(!month3Map[p.id]){
+      anomalies.push('🆕 <strong>'+p.name+'</strong> — 3개월 TOP10 외 품목이 오늘 '+(i+1)+'위 신규 진입 ('+fmtW(p.amt)+'원)');
+    } else {
+      const diff = month3Map[p.id].rank-(i+1);
+      if(diff>=3) anomalies.push('📈 <strong>'+p.name+'</strong> — 3개월 평균 '+month3Map[p.id].rank+'위 → 오늘 '+(i+1)+'위 ('+diff+'단계 급상승)');
+      if(diff<=-3) anomalies.push('📉 <strong>'+p.name+'</strong> — 3개월 평균 '+month3Map[p.id].rank+'위 → 오늘 '+(i+1)+'위 ('+Math.abs(diff)+'단계 급하락)');
+    }
+    if(p.view>50 && p.convRate>10) anomalies.push('⚡ <strong>'+p.name+'</strong> — 전환율 '+p.convRate.toFixed(1)+'% 이례적 고전환 달성');
+  });
+
+  month3.forEach((p,i)=>{
+    if(!day1Map[p.id]) problems.push('📉 <strong>'+p.name+'</strong> (3개월 '+(i+1)+'위) — 오늘 TOP10 미진입, 매출 부진 신호');
+    else if(day1Map[p.id].rank>(i+1)+4) problems.push('⬇️ <strong>'+p.name+'</strong> — 3개월 '+(i+1)+'위 → 오늘 '+day1Map[p.id].rank+'위 큰 폭 하락');
+  });
+  day1.forEach(p=>{
+    if(p.view>100 && p.convRate<2) problems.push('❌ <strong>'+p.name+'</strong> — 조회수 '+fmt(p.view)+'회에 전환율 '+p.convRate.toFixed(1)+'% (트래픽 낭비)');
+    if(!month3Map[p.id] && p.convRate<1) problems.push('⚠️ <strong>'+p.name+'</strong> — 신규 진입이나 전환율 '+p.convRate.toFixed(1)+'%로 매우 낮음');
+  });
+
+  month3.forEach(p=>{
+    if(!day1Map[p.id]) improvements.push('🔄 <strong>'+p.name+'</strong> — 주력 품목 이탈, 할인 프로모션·노출 강화·리뷰 관리 검토');
+  });
+  day1.forEach(p=>{
+    if(p.view>100 && p.convRate<2) improvements.push('🔧 <strong>'+p.name+'</strong> — 상세페이지 이미지·설명·리뷰 강화로 전환율 개선');
+    if(!month3Map[p.id]) improvements.push('🚀 <strong>'+p.name+'</strong> — 신규 진입 품목, 재고·가격 안정 및 집중 마케팅 권장');
+  });
+
+  if(!anomalies.length) anomalies.push('<span class="analysis-empty">특이한 순위 변동 없음 (전반적으로 안정적)</span>');
+  if(!problems.length) problems.push('<span class="analysis-empty">주요 문제점 없음 — 정상 운영 중</span>');
+  if(!improvements.length) improvements.push('<span class="analysis-empty">현 상태 유지, 지속 모니터링 권장</span>');
+
+  return {date, anomalies, problems, improvements};
+}
+
+function generateAnalysis(){
+  const allDates = RAW.daily.map(d=>d.date).sort();
+  const latest = allDates[allDates.length-1];
+  if(!latest) return null;
+  const day1 = getTop10DataForRange(latest, latest).top10;
+  const d3m = new Date(latest);
+  d3m.setMonth(d3m.getMonth()-3);
+  const from3m = d3m.toISOString().slice(0,10);
+  const month3 = getTop10DataForRange(from3m, latest).top10;
+  return computeAnalysis(latest, day1, month3);
+}
+
+function saveAnalysis(result){
+  const history = JSON.parse(localStorage.getItem('analysisHistory')||'{}');
+  history[result.date] = result;
+  localStorage.setItem('analysisHistory', JSON.stringify(history));
+}
+
+function renderAnalysisReport(result){
+  const card = document.getElementById('analysisReportCard');
+  if(!card) return;
+  if(!result){ card.style.display='none'; return; }
+  card.style.display='';
+  document.getElementById('analysisDateLabel').textContent = result.date+' 기준 분석 (최근 1일 vs 최근 3개월 TOP10 비교)';
+  document.getElementById('sectionAnomaly').innerHTML = result.anomalies.map(t=>'<div class="analysis-item">'+t+'</div>').join('');
+  document.getElementById('sectionProblem').innerHTML = result.problems.map(t=>'<div class="analysis-item">'+t+'</div>').join('');
+  document.getElementById('sectionImprovement').innerHTML = result.improvements.map(t=>'<div class="analysis-item">'+t+'</div>').join('');
+  const history = JSON.parse(localStorage.getItem('analysisHistory')||'{}');
+  const dates = Object.keys(history).sort().reverse();
+  const sel = document.getElementById('analysisDateSel');
+  if(sel) sel.innerHTML = dates.map(d=>'<option value="'+d+'"'+(d===result.date?' selected':'')+'>'+d+'</option>').join('');
+}
+
+function generateAndSaveAnalysis(){
+  const result = generateAnalysis();
+  if(!result){ showToast('⚠️ 분석할 데이터가 없습니다'); return; }
+  saveAnalysis(result);
+  renderAnalysisReport(result);
+  showToast('✅ '+result.date+' 분석 저장 완료');
+}
+
+function loadAnalysisByDate(date){
+  const history = JSON.parse(localStorage.getItem('analysisHistory')||'{}');
+  if(history[date]) renderAnalysisReport(history[date]);
 }
 
 // ─── API KEY ───
